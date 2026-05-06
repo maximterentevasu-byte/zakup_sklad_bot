@@ -1,5 +1,5 @@
-// dotenv нужен только локально — Railway подставляет переменные сам
 try { require('dotenv').config(); } catch (_) {}
+
 const { Telegraf, Markup } = require('telegraf');
 const fetch = require('node-fetch');
 const { processFiles, generateExcel } = require('./processor');
@@ -9,248 +9,191 @@ if (!BOT_TOKEN) throw new Error('Не задан BOT_TOKEN в переменны
 
 const bot = new Telegraf(BOT_TOKEN);
 
-// ─── Хранилище сессий (в памяти) ──────────────────────────────────────────────
-// chatId → { files: { АСБ: Buffer, КАМ: Buffer, ПОБ: Buffer, СКЛ: Buffer }, pending: String|null }
+// ─── Сессии ───────────────────────────────────────────────────────────────────
+// chatId → { files: {АСБ,КАМ,ПОБ,СКЛ}, resultBuffer: Buffer|null }
 const sessions = new Map();
-
-const STORES = [
-  { key: 'АСБ', label: '🏪 Асбест'    },
-  { key: 'КАМ', label: '🏪 Каменская' },
-  { key: 'ПОБ', label: '🏪 Победы'    },
-  { key: 'СКЛ', label: '🏦 Склад'     },
-];
 
 function getSession(chatId) {
   if (!sessions.has(chatId)) {
-    sessions.set(chatId, { files: {}, pending: null });
+    sessions.set(chatId, { files: {}, resultBuffer: null });
   }
   return sessions.get(chatId);
 }
 
-function resetSession(chatId) {
-  sessions.set(chatId, { files: {}, pending: null });
+// ─── Константы ────────────────────────────────────────────────────────────────
+const STORES = [
+  { key: 'АСБ', label: 'Асбест'    },
+  { key: 'КАМ', label: 'Каменская' },
+  { key: 'ПОБ', label: 'Победы'    },
+  { key: 'СКЛ', label: 'Склад'     },
+];
+
+// ─── Клавиатуры ───────────────────────────────────────────────────────────────
+const MAIN_MENU = Markup.inlineKeyboard([
+  [Markup.button.callback('📊 Сроки годности',   'menu:srok')],
+  [Markup.button.callback('📦 Остатки товара',   'menu:ostatki')],
+]);
+
+const SROK_MENU = Markup.inlineKeyboard([
+  [Markup.button.callback('🔄 Обновить сроки годности', 'srok:update')],
+  [Markup.button.callback('📥 Скачать файл со сроками', 'srok:download')],
+  [Markup.button.callback('⬅️ Главное меню',             'menu:main')],
+]);
+
+const BACK_TO_SROK = Markup.inlineKeyboard([
+  [Markup.button.callback('⬅️ Назад',        'menu:srok')],
+  [Markup.button.callback('🏠 Главное меню', 'menu:main')],
+]);
+
+// ─── Хелперы ──────────────────────────────────────────────────────────────────
+function uploadStatus(files) {
+  return STORES.map(s =>
+    `${files[s.key] ? '✅' : '⏳'} ${s.label} (${s.key}.xlsx)`
+  ).join('\n');
 }
 
-// Сколько файлов уже загружено
-function uploadedList(files) {
-  return STORES.map(s => `${files[s.key] ? '✅' : '⬜'} ${s.label}`).join('\n');
+function detectStore(filename) {
+  const upper = filename.toUpperCase();
+  return STORES.find(s => upper.includes(s.key)) ?? null;
 }
 
-// Клавиатура для выбора магазина
-function storeKeyboard(uploadedFiles) {
-  const buttons = STORES
-    .filter(s => !uploadedFiles[s.key])
-    .map(s => [Markup.button.callback(s.label, `store:${s.key}`)]);
-
-  buttons.push([Markup.button.callback('🔄 Начать заново', 'restart')]);
-  return Markup.inlineKeyboard(buttons);
-}
-
-// Скачиваем файл из Telegram → Buffer
 async function downloadFile(fileId) {
-  const fileInfo = await bot.telegram.getFile(fileId);
-  const url = `https://api.telegram.org/file/bot${BOT_TOKEN}/${fileInfo.file_path}`;
+  const info = await bot.telegram.getFile(fileId);
+  const url  = `https://api.telegram.org/file/bot${BOT_TOKEN}/${info.file_path}`;
   const res  = await fetch(url);
-  if (!res.ok) throw new Error(`Ошибка загрузки файла: ${res.status}`);
+  if (!res.ok) throw new Error(`Ошибка скачивания: ${res.status}`);
   return Buffer.from(await res.arrayBuffer());
 }
 
 // ─── Команды ──────────────────────────────────────────────────────────────────
-
 bot.start(ctx => {
-  resetSession(ctx.chat.id);
-  ctx.reply(
-    '👋 Привет! Я помогу собрать файл *Сроки годности* из 4 магазинов.\n\n' +
-    'Нажмите *«Начать»*, загрузите по одному файлу для каждого магазина — ' +
-    'и я автоматически сформирую итоговый файл.',
-    {
-      parse_mode: 'Markdown',
-      ...Markup.inlineKeyboard([[Markup.button.callback('🚀 Начать', 'start_upload')]]),
-    }
+  sessions.delete(ctx.chat.id);
+  ctx.reply('👋 Привет! Выберите раздел:', MAIN_MENU);
+});
+
+// ─── Главное меню ─────────────────────────────────────────────────────────────
+bot.action('menu:main', async ctx => {
+  await ctx.answerCbQuery();
+  await ctx.editMessageText('🏠 Главное меню — выберите раздел:', MAIN_MENU);
+});
+
+// ─── Сроки годности: подменю ──────────────────────────────────────────────────
+bot.action('menu:srok', async ctx => {
+  await ctx.answerCbQuery();
+  const { resultBuffer } = getSession(ctx.chat.id);
+  const status = resultBuffer
+    ? '✅ Файл готов к скачиванию'
+    : '⚠️ Файл ещё не сформирован — нажмите «Обновить»';
+  await ctx.editMessageText(
+    `📊 *Сроки годности*\n${status}`,
+    { parse_mode: 'Markdown', ...SROK_MENU }
   );
 });
 
-bot.command('status', ctx => {
-  const { files } = getSession(ctx.chat.id);
-  const loaded = Object.keys(files).length;
-  ctx.reply(
-    `📊 *Статус загрузки:* ${loaded}/4\n\n${uploadedList(files)}`,
-    { parse_mode: 'Markdown', ...storeKeyboard(files) }
+// ─── Остатки товара: заглушка ─────────────────────────────────────────────────
+bot.action('menu:ostatki', async ctx => {
+  await ctx.answerCbQuery();
+  await ctx.editMessageText(
+    '📦 *Остатки товара*\n\n🚧 Раздел в разработке — скоро будет доступен.',
+    { parse_mode: 'Markdown', ...Markup.inlineKeyboard([
+      [Markup.button.callback('⬅️ Главное меню', 'menu:main')],
+    ])}
   );
 });
 
-bot.command('reset', ctx => {
-  resetSession(ctx.chat.id);
-  ctx.reply('🔄 Сессия сброшена. Нажмите /start чтобы начать заново.');
-});
-
-// ─── Callback-кнопки ──────────────────────────────────────────────────────────
-
-bot.action('start_upload', async ctx => {
+// ─── Обновить: показываем статус и ждём файлы ─────────────────────────────────
+bot.action('srok:update', async ctx => {
   await ctx.answerCbQuery();
   const { files } = getSession(ctx.chat.id);
   await ctx.editMessageText(
-    '📁 Загрузите файлы магазинов.\nНажмите на магазин, затем отправьте его Excel-файл:\n\n' +
-    uploadedList(files),
-    { parse_mode: 'Markdown', ...storeKeyboard(files) }
+    `📤 *Загрузка файлов*\n\n` +
+    `Отправьте в чат все 4 файла магазинов — в любом порядке.\n` +
+    `Бот определит их автоматически по названию.\n\n` +
+    uploadStatus(files),
+    { parse_mode: 'Markdown', ...BACK_TO_SROK }
   );
 });
 
-bot.action('restart', async ctx => {
+// ─── Скачать файл ─────────────────────────────────────────────────────────────
+bot.action('srok:download', async ctx => {
   await ctx.answerCbQuery();
-  resetSession(ctx.chat.id);
-  const { files } = getSession(ctx.chat.id);
-  await ctx.editMessageText(
-    '🔄 Начинаем заново.\nВыберите магазин и загрузите файл:\n\n' + uploadedList(files),
-    { parse_mode: 'Markdown', ...storeKeyboard(files) }
-  );
-});
-
-// Пользователь нажал кнопку магазина → запоминаем ожидание
-bot.action(/^store:(.+)$/, async ctx => {
-  await ctx.answerCbQuery();
-  const storeKey = ctx.match[1];
-  const store    = STORES.find(s => s.key === storeKey);
-  if (!store) return;
-
-  const session  = getSession(ctx.chat.id);
-  session.pending = storeKey;
-
-  await ctx.reply(
-    `📤 Отправьте файл для *${store.label}*\n\n` +
-    `_Ожидается .xlsx файл со страницей «Список сроков»_`,
-    { parse_mode: 'Markdown' }
-  );
-});
-
-// ─── Обработка входящего документа ────────────────────────────────────────────
-
-bot.on('document', async ctx => {
   const session = getSession(ctx.chat.id);
-  const doc     = ctx.message.document;
 
-  // Проверяем тип файла
-  if (!doc.file_name.endsWith('.xlsx')) {
-    return ctx.reply('⚠️ Пожалуйста, отправьте файл в формате .xlsx');
+  if (!session.resultBuffer) {
+    await ctx.answerCbQuery('⚠️ Файл не сформирован. Сначала загрузите файлы магазинов.', { show_alert: true });
+    return;
   }
 
-  // Определяем для какого магазина файл
-  let storeKey = session.pending;
+  const date = new Date().toLocaleDateString('ru-RU').replace(/\./g, '-');
+  await ctx.replyWithDocument(
+    { source: session.resultBuffer, filename: `Сроки_годности_${date}.xlsx` },
+    { caption: `📊 Сроки годности — ${date}` }
+  );
+});
 
-  // Если pending не задан — пробуем угадать по имени файла
-  if (!storeKey) {
-    const name = doc.file_name.toUpperCase();
-    const found = STORES.find(s => name.includes(s.key));
-    if (found) {
-      storeKey = found.key;
-    } else {
-      return ctx.reply(
-        '❓ Не знаю для какого магазина этот файл.\n' +
-        'Нажмите кнопку магазина, потом отправьте файл:',
-        storeKeyboard(session.files)
-      );
-    }
+// ─── Приём документов ─────────────────────────────────────────────────────────
+bot.on('document', async ctx => {
+  const doc = ctx.message.document;
+
+  if (!doc.file_name.toLowerCase().endsWith('.xlsx')) {
+    return ctx.reply('⚠️ Нужен файл в формате .xlsx');
   }
 
-  const store = STORES.find(s => s.key === storeKey);
-  session.pending = null;
+  const store = detectStore(doc.file_name);
+  if (!store) {
+    return ctx.reply(
+      '❓ Не могу определить магазин по названию файла.\n' +
+      'Название должно содержать: АСБ, КАМ, ПОБ или СКЛ.',
+      BACK_TO_SROK
+    );
+  }
 
-  // Скачиваем файл
-  const loadingMsg = await ctx.reply(`⏳ Загружаю файл для *${store.label}*...`, { parse_mode: 'Markdown' });
+  const session = getSession(ctx.chat.id);
+  const loadMsg = await ctx.reply(`⏳ Получаю файл *${store.label}*...`, { parse_mode: 'Markdown' });
 
   try {
-    const buffer = await downloadFile(doc.file_id);
-    session.files[storeKey] = buffer;
+    session.files[store.key] = await downloadFile(doc.file_id);
 
     const loaded = Object.keys(session.files).length;
+    const allDone = loaded === 4;
 
     await ctx.telegram.editMessageText(
-      ctx.chat.id,
-      loadingMsg.message_id,
-      null,
-      `✅ Файл *${store.label}* загружен! (${loaded}/4)\n\n${uploadedList(session.files)}`,
+      ctx.chat.id, loadMsg.message_id, null,
+      `✅ *${store.label}* загружен (${loaded}/4)\n\n${uploadStatus(session.files)}`,
       { parse_mode: 'Markdown' }
     );
 
-    // Если все 4 файла загружены — запускаем обработку
-    if (loaded === 4) {
-      await buildAndSend(ctx, session);
-    } else {
-      // Предлагаем загрузить следующий
-      await ctx.reply(
-        `📁 Осталось загрузить: ${4 - loaded} файла.\nВыберите следующий магазин:`,
-        storeKeyboard(session.files)
-      );
+    if (allDone) {
+      // Все файлы есть — обрабатываем и сохраняем результат
+      const procMsg = await ctx.reply('⚙️ Формирую файл со сроками годности...');
+      try {
+        const data = processFiles(session.files);
+        session.resultBuffer = generateExcel(data);
+
+        await ctx.telegram.editMessageText(
+          ctx.chat.id, procMsg.message_id, null,
+          `✅ *Готово!* Строк в файле: ${data.length}\n\nНажмите «Скачать файл со сроками» в меню.`,
+          { parse_mode: 'Markdown', ...BACK_TO_SROK }
+        );
+      } catch (err) {
+        console.error('Ошибка генерации:', err);
+        await ctx.telegram.editMessageText(
+          ctx.chat.id, procMsg.message_id, null,
+          `❌ Ошибка при создании файла: ${err.message}`
+        );
+      }
     }
   } catch (err) {
-    console.error('Ошибка при обработке файла:', err);
+    console.error('Ошибка загрузки файла:', err);
     await ctx.telegram.editMessageText(
-      ctx.chat.id,
-      loadingMsg.message_id,
-      null,
-      `❌ Ошибка при обработке файла: ${err.message}`
+      ctx.chat.id, loadMsg.message_id, null,
+      `❌ Не удалось загрузить файл: ${err.message}`
     );
   }
 });
-
-// ─── Генерация и отправка итогового файла ─────────────────────────────────────
-
-async function buildAndSend(ctx, session) {
-  const processingMsg = await ctx.reply('⚙️ Все файлы получены! Формирую итоговый файл...');
-
-  try {
-    const data   = processFiles(session.files);
-    const buffer = generateExcel(data);
-
-    const now      = new Date();
-    const dateStr  = now.toLocaleDateString('ru-RU').replace(/\./g, '-');
-    const filename = `Сроки_годности_${dateStr}.xlsx`;
-
-    await ctx.telegram.editMessageText(
-      ctx.chat.id,
-      processingMsg.message_id,
-      null,
-      `✅ Готово! Строк в файле: *${data.length}*\nОтправляю...`,
-      { parse_mode: 'Markdown' }
-    );
-
-    await ctx.replyWithDocument(
-      { source: buffer, filename },
-      {
-        caption:
-          `📊 *Сроки годности* — ${dateStr}\n\n` +
-          `Итого позиций: *${data.length}*\n` +
-          Object.entries(session.files)
-            .map(([k]) => `${STORES.find(s => s.key === k).label} ✅`)
-            .join('\n'),
-        parse_mode: 'Markdown',
-      }
-    );
-
-    // Сбрасываем сессию для новой итерации
-    resetSession(ctx.chat.id);
-
-    await ctx.reply(
-      '🔄 Хотите сформировать новый файл?',
-      Markup.inlineKeyboard([[Markup.button.callback('🚀 Начать снова', 'start_upload')]])
-    );
-  } catch (err) {
-    console.error('Ошибка при генерации файла:', err);
-    await ctx.telegram.editMessageText(
-      ctx.chat.id,
-      processingMsg.message_id,
-      null,
-      `❌ Ошибка при создании файла: ${err.message}\n\nПопробуйте ещё раз или проверьте формат файлов.`
-    );
-  }
-}
 
 // ─── Запуск ───────────────────────────────────────────────────────────────────
+bot.launch().then(() => console.log('🤖 Бот запущен'));
 
-bot.launch().then(() => {
-  console.log('🤖 Бот запущен');
-});
-
-// Graceful shutdown для Railway
 process.once('SIGINT',  () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
