@@ -1,4 +1,5 @@
-require('dotenv').config();
+// dotenv нужен только локально — Railway подставляет переменные сам
+try { require('dotenv').config(); } catch (_) {}
 const { Telegraf, Markup } = require('telegraf');
 const fetch = require('node-fetch');
 const { processFiles, generateExcel } = require('./processor');
