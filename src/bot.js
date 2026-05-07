@@ -502,7 +502,7 @@ bot.action('minOst:update', async ctx => {
   }
 
   // Заполняем шаблон
-  const buf = pMin.fillTemplate(groups);
+  const buf = await pMin.fillTemplate(groups);
   session.waitingForMinOst = true;
 
   await ctx.replyWithDocument(
