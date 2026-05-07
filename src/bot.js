@@ -391,8 +391,11 @@ bot.on('document', async ctx => {
 
 // ── Сборка Остатков ────────────────────────────────────────────────────────
 async function buildOstatki(ctx, session) {
-  const procMsg = await ctx.reply('⚙️ Все файлы получены! Формирую Закуп и Сбыт_Маркетинг...');
+  const chatId   = ctx.chat.id;
+  const procMsg  = await ctx.reply('⚙️ Все файлы получены! Формирую Закуп и Сбыт_Маркетинг...');
+
   try {
+    // Генерация может занять время — уведомляем
     const { zakupBuffer, sbytBuffer, rowCount } = processOstatki({
       srokiBuffer:    session.ostatki.sroki,
       skladBuffer:    session.ostatki.sklad,
@@ -405,34 +408,45 @@ async function buildOstatki(ctx, session) {
 
     const date = new Date().toLocaleDateString('ru-RU').replace(/\./g, '-');
 
-    await ctx.telegram.editMessageText(ctx.chat.id, procMsg.message_id, null,
-      `✅ *Готово!* Обработано строк: ${rowCount}. Отправляю файлы...`,
+    await ctx.telegram.editMessageText(chatId, procMsg.message_id, null,
+      `✅ *Готово!* Строк: ${rowCount}. Отправляю Закуп...`,
       { parse_mode: 'Markdown' }
     );
 
-    // Отправляем оба файла сразу — не зависим от сессии при перезапуске
-    await ctx.replyWithDocument(
-      { source: zakupBuffer, filename: `Закуп_${date}.xlsx` },
-      { caption: `📦 Закуп — ${date}` }
-    );
-    await ctx.replyWithDocument(
-      { source: sbytBuffer, filename: `Сбыт_Маркетинг_${date}.xlsx` },
-      { caption: `📊 Сбыт_Маркетинг — ${date}` }
-    );
+    // Закуп
+    try {
+      await bot.telegram.sendDocument(chatId,
+        { source: zakupBuffer, filename: `Закуп_${date}.xlsx` },
+        { caption: `📦 Закуп — ${date}` }
+      );
+    } catch (e) {
+      console.error('Ошибка отправки Закуп:', e.message);
+      await bot.telegram.sendMessage(chatId, `❌ Не удалось отправить Закуп: ${e.message}`);
+    }
 
-    await ctx.reply(
-      '✅ Оба файла отправлены!\nДля повторного скачивания — кнопки меню:',
+    await bot.telegram.sendMessage(chatId, '⏳ Отправляю Сбыт_Маркетинг...');
+
+    // Сбыт_Маркетинг
+    try {
+      await bot.telegram.sendDocument(chatId,
+        { source: sbytBuffer, filename: `Сбыт_Маркетинг_${date}.xlsx` },
+        { caption: `📊 Сбыт_Маркетинг — ${date}` }
+      );
+    } catch (e) {
+      console.error('Ошибка отправки Сбыт:', e.message);
+      await bot.telegram.sendMessage(chatId, `❌ Не удалось отправить Сбыт_Маркетинг: ${e.message}`);
+    }
+
+    await bot.telegram.sendMessage(chatId,
+      '✅ Готово! Для повторного скачивания — кнопки меню:',
       OSTATKI_MENU(session)
     );
+
   } catch (err) {
     console.error('Ошибка сборки:', err);
-    await ctx.telegram.editMessageText(ctx.chat.id, procMsg.message_id, null,
-      `❌ Ошибка:
-${err.message}`
-    );
+    await bot.telegram.sendMessage(chatId, `❌ Ошибка при создании файлов:\n${err.message}`);
   }
 }
-
 // ── Запуск ─────────────────────────────────────────────────────────────────
 
 // ═══════════════════════════════════════════════════════════════════════════
