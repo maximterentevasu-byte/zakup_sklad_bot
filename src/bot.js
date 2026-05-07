@@ -141,20 +141,26 @@ bot.action('menu:sroki', async ctx => {
   await ctx.answerCbQuery();
   const session = getSession(ctx.chat.id);
 
-  // ── Минимальные остатки: ожидаем загрузку заполненного файла ───────────────
-  if (session.waitingForMinOst) {
-    session.waitingForMinOst = false;
-    const saveMsg = await ctx.reply('⏳ Сохраняю файл минимальных остатков...');
+  // ── Минимальные остатки: принимаем файл с любым именем, проверяем структуру ──
+  if (pMin.isWaitingForMin(ctx.chat.id)) {
+    const saveMsg = await ctx.reply('⏳ Проверяю файл...');
     try {
       const buf = await downloadFile(doc.file_id);
+      if (!pMin.isMinOstkiFile(buf)) {
+        await ctx.telegram.editMessageText(ctx.chat.id, saveMsg.message_id, null,
+          '⚠️ Файл не подходит — не найден лист «Одиночные группы».\n\nЗагрузите заполненный шаблон минимальных остатков.'
+        );
+        return;
+      }
+      pMin.clearWaitingForMin(ctx.chat.id);
       pMin.saveMinFile(buf, doc.file_id);
       await ctx.telegram.editMessageText(ctx.chat.id, saveMsg.message_id, null,
-        `✅ Файл *Минимальные остатки* сохранён!\nОн будет доступен до следующей замены.`,
+        '✅ Файл *Минимальные остатки* сохранён навсегда!\nДоступен до следующей замены.',
         { parse_mode: 'Markdown', ...MIN_OST_MENU() }
       );
     } catch (err) {
       await ctx.telegram.editMessageText(ctx.chat.id, saveMsg.message_id, null,
-        `❌ Не удалось сохранить файл: ${err.message}`
+        `❌ Ошибка: ${err.message}`
       );
     }
     return;
@@ -506,7 +512,7 @@ bot.action('minOst:update', async ctx => {
 
   // Заполняем шаблон
   const buf = await pMin.fillTemplate(groups);
-  session.waitingForMinOst = true;
+  pMin.setWaitingForMin(ctx.chat.id); // сохраняем на диск — переживает рестарт
 
   await ctx.replyWithDocument(
     { source: buf, filename: 'Минимальные_остатки_шаблон.xlsm' },

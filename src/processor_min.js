@@ -22,6 +22,46 @@ function ensureDir() {
   if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 }
 
+// ── Persistent waiting state (survives bot restarts) ─────────────────────────
+const WAITING_FILE = path.join(DATA_DIR, 'waiting_min.json');
+
+function setWaitingForMin(chatId) {
+  ensureDir();
+  let w = {};
+  try { if (fs.existsSync(WAITING_FILE)) w = JSON.parse(fs.readFileSync(WAITING_FILE, 'utf8')); } catch {}
+  w[String(chatId)] = Date.now();
+  fs.writeFileSync(WAITING_FILE, JSON.stringify(w), 'utf8');
+}
+
+function isWaitingForMin(chatId) {
+  try {
+    if (!fs.existsSync(WAITING_FILE)) return false;
+    const w = JSON.parse(fs.readFileSync(WAITING_FILE, 'utf8'));
+    const ts = w[String(chatId)];
+    if (!ts) return false;
+    return (Date.now() - ts) < 24 * 3600 * 1000; // истекает через 24ч
+  } catch { return false; }
+}
+
+function clearWaitingForMin(chatId) {
+  try {
+    if (!fs.existsSync(WAITING_FILE)) return;
+    const w = JSON.parse(fs.readFileSync(WAITING_FILE, 'utf8'));
+    delete w[String(chatId)];
+    fs.writeFileSync(WAITING_FILE, JSON.stringify(w), 'utf8');
+  } catch {}
+}
+
+// Проверяет структуру файла: содержит ли лист «Одиночные группы»
+function isMinOstkiFile(buffer) {
+  try {
+    const XLSX2 = require('xlsx');
+    const wb = XLSX2.read(buffer, { type: 'buffer' });
+    return wb.SheetNames.some(n => /Одиночные/i.test(n));
+  } catch { return false; }
+}
+
+
 // ── Группы из файла Склад ─────────────────────────────────────────────────
 function saveSkładGroups(groups) {
   ensureDir();
@@ -162,4 +202,5 @@ module.exports = {
   saveSkładGroups, loadSkładGroups, extractGroupsFromSklad,
   fillTemplate, saveMinFile,
   hasMinFile, getMinFilePath, getMinFileId, getMinFileSavedAt,
+  setWaitingForMin, isWaitingForMin, clearWaitingForMin, isMinOstkiFile,
 };
