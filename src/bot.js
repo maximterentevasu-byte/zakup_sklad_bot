@@ -241,8 +241,15 @@ bot.on('document', async ctx => {
   const session = getSession(ctx.chat.id);
 
   // ── Определяем контекст: Сроки или Остатки ──────────────────────────────
-  // Сроки годности — файлы магазинов (АСБ/КАМ/ПОБ/СКЛ в имени)
-  const isSrokiStore = SROK_STORES.some(s => name.toUpperCase().includes(s.key));
+  // СКЛ матчим только как отдельное слово — иначе «товары склад.xlsx» ложно
+  // определяется как файл магазина Склад и ломает сборку.
+  function matchStore(filename, key) {
+    const n = filename.toUpperCase();
+    if (key === 'СКЛ') return /(?:^|[^А-ЯЁA-Z0-9])СКЛ(?:[^А-ЯЁA-Z0-9]|$)/.test(n);
+    return n.includes(key);
+  }
+
+  const isSrokiStore = SROK_STORES.some(s => matchStore(name, s.key));
 
   // Остатки — по именам файлов
   const ostatki_type = OSTATKI_FILES.find(f => f.detect(name));
@@ -250,7 +257,7 @@ bot.on('document', async ctx => {
 
   // ── СРОКИ ГОДНОСТИ: файлы магазинов ────────────────────────────────────
   if (isSrokiStore) {
-    const store = SROK_STORES.find(s => name.toUpperCase().includes(s.key));
+    const store = SROK_STORES.find(s => matchStore(name, s.key));
     const msg = await ctx.reply(`⏳ Получаю файл *${store.label}*...`, { parse_mode: 'Markdown' });
 
     try {
