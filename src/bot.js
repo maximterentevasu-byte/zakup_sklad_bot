@@ -140,6 +140,27 @@ bot.action('menu:main', async ctx => {
 bot.action('menu:sroki', async ctx => {
   await ctx.answerCbQuery();
   const session = getSession(ctx.chat.id);
+
+  // ── Минимальные остатки: ожидаем загрузку заполненного файла ───────────────
+  if (session.waitingForMinOst) {
+    session.waitingForMinOst = false;
+    const saveMsg = await ctx.reply('⏳ Сохраняю файл минимальных остатков...');
+    try {
+      const buf = await downloadFile(doc.file_id);
+      pMin.saveMinFile(buf, doc.file_id);
+      await ctx.telegram.editMessageText(ctx.chat.id, saveMsg.message_id, null,
+        `✅ Файл *Минимальные остатки* сохранён!\nОн будет доступен до следующей замены.`,
+        { parse_mode: 'Markdown', ...MIN_OST_MENU() }
+      );
+    } catch (err) {
+      await ctx.telegram.editMessageText(ctx.chat.id, saveMsg.message_id, null,
+        `❌ Не удалось сохранить файл: ${err.message}`
+      );
+    }
+    return;
+  }
+
+
   const status  = session.srokiBuffer
     ? '✅ Файл готов к скачиванию'
     : '⚠️ Файл не сформирован — нажмите «Обновить»';
@@ -348,24 +369,6 @@ bot.on('document', async ctx => {
     return;
   }
 
-  // ── Минимальные остатки: ожидаем загрузку заполненного файла ───────────────
-  if (session.waitingForMinOst && name.toLowerCase().endsWith('.xlsx')) {
-    session.waitingForMinOst = false;
-    const saveMsg = await ctx.reply('⏳ Сохраняю файл минимальных остатков...');
-    try {
-      const buf = await downloadFile(doc.file_id);
-      pMin.saveMinFile(buf, doc.file_id);
-      await ctx.telegram.editMessageText(ctx.chat.id, saveMsg.message_id, null,
-        `✅ Файл *Минимальные остатки* сохранён!\nОн будет доступен до следующей замены.`,
-        { parse_mode: 'Markdown', ...MIN_OST_MENU() }
-      );
-    } catch (err) {
-      await ctx.telegram.editMessageText(ctx.chat.id, saveMsg.message_id, null,
-        `❌ Не удалось сохранить файл: ${err.message}`
-      );
-    }
-    return;
-  }
 
   // ── Не удалось определить ───────────────────────────────────────────────
   await ctx.reply(
