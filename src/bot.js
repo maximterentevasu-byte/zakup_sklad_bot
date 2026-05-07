@@ -212,11 +212,7 @@ bot.action('ostatki:template', async ctx => {
   }
   await ctx.replyWithDocument(
     { source: fs.createReadStream(templatePath), filename: 'Продажи_шаблон.xlsx' },
-    { caption: '📋 Шаблон файла Продажи
-
-Заполните листы АСБ, КАМ, ПОБ:
-• Столбец A: ШК
-• Столбец B: Покупка (кол-во за 14 дней)' }
+    { caption: '📋 Шаблон файла Продажи\n\nЗаполните листы АСБ, КАМ, ПОБ:\n• Столбец A: ШК\n• Столбец B: Покупка (кол-во за 14 дней)' }
   );
 });
 
@@ -386,8 +382,7 @@ async function buildOstatki(ctx, session) {
     );
 
     await ctx.reply(
-      '✅ Оба файла отправлены!
-Для повторного скачивания — кнопки меню:',
+      '✅ Оба файла отправлены!\nДля повторного скачивания — кнопки меню:',
       OSTATKI_MENU(session)
     );
   } catch (err) {
