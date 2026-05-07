@@ -465,7 +465,7 @@ bot.action('minOst:download', async ctx => {
   const savedAt  = pMin.getMinFileSavedAt();
   if (filePath) {
     await ctx.replyWithDocument(
-      { source: filePath, filename: `Минимальные_остатки_${savedAt}.xlsx` },
+      { source: filePath, filename: `Минимальные_остатки_${savedAt}.xlsm` },
       { caption: `📋 Минимальные остатки — сохранён ${savedAt}` }
     );
   } else if (fileId) {
@@ -506,7 +506,7 @@ bot.action('minOst:update', async ctx => {
   session.waitingForMinOst = true;
 
   await ctx.replyWithDocument(
-    { source: buf, filename: 'Минимальные_остатки_шаблон.xlsx' },
+    { source: buf, filename: 'Минимальные_остатки_шаблон.xlsm' },
     { caption: `📋 Шаблон заполнен: ${groups.length} групп в столбце A.\n\nЗаполните файл и загрузите его обратно в этот чат.` }
   );
 });
