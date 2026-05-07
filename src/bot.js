@@ -5,6 +5,7 @@ const path = require('path');
 const fs   = require('fs');
 const fetch = require('node-fetch');
 const { processFiles, generateExcel } = require('./processor');
+const { processOstatki } = require('./processor_ostatki');
 const pMin = require('./processor_min');
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
