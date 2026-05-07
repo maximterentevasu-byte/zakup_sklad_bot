@@ -259,77 +259,94 @@ function computeF(rows, allBaseShks) {
 function nv(v) { return (v === 0 || v == null || isNaN(v)) ? null : v; }
 
 function generateExcel(rows, withSrokSklad, sheetTitle) {
-  if (withSrokSklad) {
-    var headers = [
-      'Группа', 'Наименование товара', 'ШК',
-      'Окончание срока годности', 'Все сроки товара склад',
-      'Общий остаток\nАкция и Неакция', 'Все остатки',
-      'ОСТ Склад', 'ОСТ КАМ', 'ОСТ АСБ', 'ОСТ ПОБ',
-      'Продажи ОБЩ', 'Продажи КАМ', 'Продажи АСБ', 'Продажи ПОБ',
-    ];
-  } else {
-    var headers = [
-      'Группа', 'Наименование товара', 'ШК',
-      'Окончание срока годности',
-      'Общий остаток\nАкция и Неакция', 'Все остатки',
-      'ОСТ Склад', 'ОСТ КАМ', 'ОСТ АСБ', 'ОСТ ПОБ',
-      'Продажи ОБЩ', 'Продажи КАМ', 'Продажи АСБ', 'Продажи ПОБ',
-    ];
+  const headers = withSrokSklad
+    ? ['Группа', 'Наименование товара', 'ШК',
+       'Окончание срока годности', 'Все сроки товара склад',
+       'Общий остаток\nАкция и Неакция', 'Все остатки',
+       'ОСТ Склад', 'ОСТ КАМ', 'ОСТ АСБ', 'ОСТ ПОБ',
+       'Продажи ОБЩ', 'Продажи КАМ', 'Продажи АСБ', 'Продажи ПОБ']
+    : ['Группа', 'Наименование товара', 'ШК',
+       'Окончание срока годности',
+       'Общий остаток\nАкция и Неакция', 'Все остатки',
+       'ОСТ Склад', 'ОСТ КАМ', 'ОСТ АСБ', 'ОСТ ПОБ',
+       'Продажи ОБЩ', 'Продажи КАМ', 'Продажи АСБ', 'Продажи ПОБ'];
+
+  // Поля которые суммируются в промежуточных итогах
+  const SUM_FIELDS = ['f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o'];
+
+  // ── Строим плоский массив строк с промежуточными итогами ─────────────────
+  const allRows = [];   // { isSubtotal, ...данные }
+  let curGroup  = null;
+  let groupAcc  = {};   // накопители сумм текущей группы
+
+  function resetAcc() { SUM_FIELDS.forEach(f => groupAcc[f] = 0); }
+  function flushGroup() {
+    if (curGroup === null) return;
+    allRows.push({
+      isSubtotal: true,
+      group:  `Итого: ${curGroup}`,
+      ...Object.fromEntries(SUM_FIELDS.map(f => [f, groupAcc[f]]))
+    });
   }
 
-  const data = [];
-  let curGroup = null;
-  let groupStart = 1; // строка начала группы (1-based, без заголовка)
-
+  resetAcc();
   for (const row of rows) {
-    // Промежуточный итог при смене группы
     if (curGroup !== null && row.group !== curGroup) {
-      const subtotal = { 'Группа': `Итого: ${curGroup}` };
-      headers.slice(withSrokSklad ? 5 : 4).forEach(h => subtotal[h] = null);
-      data.push({ _isSubtotal: true, ...subtotal, _groupStart: groupStart, _groupEnd: data.length });
-      groupStart = data.length + 1;
+      flushGroup();
+      resetAcc();
     }
     curGroup = row.group;
+    SUM_FIELDS.forEach(f => groupAcc[f] += (row[f] || 0));
+    allRows.push({ isSubtotal: false, ...row });
+  }
+  flushGroup(); // последняя группа
 
-    const dataRow = {
-      'Группа': row.group,
-      'Наименование товара': row.name,
-      'ШК': row.shkRaw || null,
+  // ── Конвертируем в формат для json_to_sheet ───────────────────────────────
+  const sheetData = allRows.map(row => {
+    if (row.isSubtotal) {
+      const r = { 'Группа': row.group };
+      // Числовые столбцы — вычисленные суммы (null если 0)
+      Object.assign(r, {
+        ['Общий остаток\nАкция и Неакция']: nv(row.f),
+        'Все остатки': nv(row.g),
+        'ОСТ Склад':   nv(row.h),
+        'ОСТ КАМ':     nv(row.i),
+        'ОСТ АСБ':     nv(row.j),
+        'ОСТ ПОБ':     nv(row.k),
+        'Продажи ОБЩ': nv(row.l),
+        'Продажи КАМ': nv(row.m),
+        'Продажи АСБ': nv(row.n),
+        'Продажи ПОБ': nv(row.o),
+      });
+      return r;
+    }
+    // Обычная строка данных
+    const r = {
+      'Группа':               row.group,
+      'Наименование товара':  row.name,
+      'ШК':                   row.shkRaw || null,
       'Окончание срока годности': row.colD || null,
     };
-    if (withSrokSklad) dataRow['Все сроки товара склад'] = row.colE || null;
-    Object.assign(dataRow, {
+    if (withSrokSklad) r['Все сроки товара склад'] = row.colE || null;
+    Object.assign(r, {
       ['Общий остаток\nАкция и Неакция']: nv(row.f),
       'Все остатки': nv(row.g),
-      'ОСТ Склад': nv(row.h),
-      'ОСТ КАМ':   nv(row.i),
-      'ОСТ АСБ':   nv(row.j),
-      'ОСТ ПОБ':   nv(row.k),
+      'ОСТ Склад':   nv(row.h),
+      'ОСТ КАМ':     nv(row.i),
+      'ОСТ АСБ':     nv(row.j),
+      'ОСТ ПОБ':     nv(row.k),
       'Продажи ОБЩ': nv(row.l),
       'Продажи КАМ': nv(row.m),
       'Продажи АСБ': nv(row.n),
       'Продажи ПОБ': nv(row.o),
     });
-    data.push(dataRow);
-  }
-
-  // Последняя группа
-  if (curGroup !== null) {
-    const subtotal = { 'Группа': `Итого: ${curGroup}` };
-    data.push({ _isSubtotal: true, ...subtotal, _groupStart: groupStart, _groupEnd: data.length });
-  }
-
-  // Убираем служебные поля и пишем в xlsx
-  const cleanData = data.map(r => {
-    const c = { ...r };
-    delete c._isSubtotal; delete c._groupStart; delete c._groupEnd;
-    return c;
+    return r;
   });
 
+  // ── Пишем в xlsx ──────────────────────────────────────────────────────────
   const wb = XLSX.utils.book_new();
-  const ws = XLSX.utils.json_to_sheet(cleanData, { header: headers, skipHeader: false });
+  const ws = XLSX.utils.json_to_sheet(sheetData, { header: headers });
 
-  // Ширины колонок
   ws['!cols'] = withSrokSklad
     ? [18, 44, 17, 15, 15, 8, 8, 8, 8, 8, 8, 9, 9, 9, 9].map(w => ({ wch: w }))
     : [18, 44, 17, 15,     8, 8, 8, 8, 8, 8, 9, 9, 9, 9].map(w => ({ wch: w }));
@@ -337,6 +354,7 @@ function generateExcel(rows, withSrokSklad, sheetTitle) {
   XLSX.utils.book_append_sheet(wb, ws, sheetTitle);
   return XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
 }
+
 
 // ── Главная функция сборки ────────────────────────────────────────────────────
 function processOstatki({ srokiBuffer, skladBuffer, ostatki_buffer, prodazhiBuffer }) {

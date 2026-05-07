@@ -1,6 +1,8 @@
 try { require('dotenv').config(); } catch (_) {}
 
 const { Telegraf, Markup } = require('telegraf');
+const path = require('path');
+const fs   = require('fs');
 const fetch = require('node-fetch');
 const { processFiles, generateExcel } = require('./processor');
 const { processOstatki } = require('./processor_ostatki');
@@ -72,6 +74,7 @@ const SROKI_MENU = (session) => {
     [Markup.button.callback(
       ready ? '📥 Скачать файл со сроками ✅' : '📥 Скачать файл со сроками',
       'sroki:download')],
+    [Markup.button.callback('📋 Скачать шаблон Продажи', 'ostatki:template')],
     [Markup.button.callback('⬅️ Главное меню', 'menu:main')],
   ]);
 };
@@ -87,6 +90,7 @@ const OSTATKI_MENU = (session) => {
     [Markup.button.callback(
       hasSbyt ? '📥 Скачать файл Сбыт_Маркетинг ✅' : '📥 Скачать файл Сбыт_Маркетинг',
       'ostatki:download_sbyt')],
+    [Markup.button.callback('📋 Скачать шаблон Продажи', 'ostatki:template')],
     [Markup.button.callback('⬅️ Главное меню', 'menu:main')],
   ]);
 };
@@ -197,6 +201,22 @@ bot.action('ostatki:create', async ctx => {
     `${ostatki_status(session.ostatki)}\n\n` +
     `_Если файл Сроки годности уже был загружен в этой сессии — он подставлен автоматически._`,
     { parse_mode: 'Markdown', ...BACK_TO_OSTATKI }
+  );
+});
+
+bot.action('ostatki:template', async ctx => {
+  await ctx.answerCbQuery();
+  const templatePath = path.join(__dirname, 'templates', 'Продажи_шаблон.xlsx');
+  if (!fs.existsSync(templatePath)) {
+    return ctx.reply('⚠️ Файл шаблона не найден на сервере.');
+  }
+  await ctx.replyWithDocument(
+    { source: fs.createReadStream(templatePath), filename: 'Продажи_шаблон.xlsx' },
+    { caption: '📋 Шаблон файла Продажи
+
+Заполните листы АСБ, КАМ, ПОБ:
+• Столбец A: ШК
+• Столбец B: Покупка (кол-во за 14 дней)' }
   );
 });
 
@@ -339,8 +359,8 @@ async function buildOstatki(ctx, session) {
   const procMsg = await ctx.reply('⚙️ Все файлы получены! Формирую Закуп и Сбыт_Маркетинг...');
   try {
     const { zakupBuffer, sbytBuffer, rowCount } = processOstatki({
-      srokiBuffer:   session.ostatki.sroki,
-      skladBuffer:   session.ostatki.sklad,
+      srokiBuffer:    session.ostatki.sroki,
+      skladBuffer:    session.ostatki.sklad,
       ostatki_buffer: session.ostatki.ostatki,
       prodazhiBuffer: session.ostatki.prodazhi,
     });
@@ -348,19 +368,38 @@ async function buildOstatki(ctx, session) {
     session.zakupBuffer = zakupBuffer;
     session.sbytBuffer  = sbytBuffer;
 
+    const date = new Date().toLocaleDateString('ru-RU').replace(/\./g, '-');
+
     await ctx.telegram.editMessageText(ctx.chat.id, procMsg.message_id, null,
-      `✅ *Готово!* Обработано строк: ${rowCount}\n\nФайлы готовы к скачиванию — нажмите кнопки в меню.`,
-      { parse_mode: 'Markdown', ...BACK_TO_OSTATKI }
+      `✅ *Готово!* Обработано строк: ${rowCount}. Отправляю файлы...`,
+      { parse_mode: 'Markdown' }
+    );
+
+    // Отправляем оба файла сразу — не зависим от сессии при перезапуске
+    await ctx.replyWithDocument(
+      { source: zakupBuffer, filename: `Закуп_${date}.xlsx` },
+      { caption: `📦 Закуп — ${date}` }
+    );
+    await ctx.replyWithDocument(
+      { source: sbytBuffer, filename: `Сбыт_Маркетинг_${date}.xlsx` },
+      { caption: `📊 Сбыт_Маркетинг — ${date}` }
+    );
+
+    await ctx.reply(
+      '✅ Оба файла отправлены!
+Для повторного скачивания — кнопки меню:',
+      OSTATKI_MENU(session)
     );
   } catch (err) {
-    console.error('Ошибка сборки Остатков:', err);
+    console.error('Ошибка сборки:', err);
     await ctx.telegram.editMessageText(ctx.chat.id, procMsg.message_id, null,
-      `❌ Ошибка при создании файлов:\n${err.message}`
+      `❌ Ошибка:
+${err.message}`
     );
   }
 }
 
 // ── Запуск ─────────────────────────────────────────────────────────────────
-bot.launch().then(() => console.log('🤖 Бот запущен'));
+bot.launch({ dropPendingUpdates: true }).then(() => console.log('🤖 Бот запущен'));
 process.once('SIGINT',  () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
