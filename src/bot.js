@@ -141,27 +141,6 @@ bot.action('menu:sroki', async ctx => {
   await ctx.answerCbQuery();
   const session = getSession(ctx.chat.id);
 
-  // ── Минимальные остатки: xlsm с листом «Одиночные группы» — без состояния ────
-  if (name.toLowerCase().endsWith('.xlsm')) {
-    const saveMsg = await ctx.reply('⏳ Проверяю структуру файла...');
-    try {
-      const buf = await downloadFile(doc.file_id);
-      if (pMin.isMinOstkiFile(buf)) {
-        pMin.saveMinFile(buf, doc.file_id);
-        await ctx.telegram.editMessageText(ctx.chat.id, saveMsg.message_id, null,
-          '✅ *Файл Минимальные остатки сохранён!*\nДоступен до следующей замены.',
-          { parse_mode: 'Markdown', ...MIN_OST_MENU() }
-        );
-        return;
-      }
-      // Не подходит — удаляем сообщение и продолжаем обычную обработку
-      await bot.telegram.deleteMessage(ctx.chat.id, saveMsg.message_id).catch(() => {});
-    } catch (err) {
-      await bot.telegram.deleteMessage(ctx.chat.id, saveMsg.message_id).catch(() => {});
-    }
-  }
-
-
   const status  = session.srokiBuffer
     ? '✅ Файл готов к скачиванию'
     : '⚠️ Файл не сформирован — нажмите «Обновить»';
@@ -279,6 +258,26 @@ bot.on('document', async ctx => {
   }
 
   const session = getSession(ctx.chat.id);
+
+  // ── Минимальные остатки: xlsm с листом «Одиночные группы» — без состояния ────
+  if (name.toLowerCase().endsWith('.xlsm')) {
+    const saveMsg = await ctx.reply('⏳ Проверяю структуру файла...');
+    try {
+      const buf = await downloadFile(doc.file_id);
+      if (pMin.isMinOstkiFile(buf)) {
+        pMin.saveMinFile(buf, doc.file_id);
+        await ctx.telegram.editMessageText(ctx.chat.id, saveMsg.message_id, null,
+          '✅ *Файл Минимальные остатки сохранён!*\nДоступен до следующей замены.',
+          { parse_mode: 'Markdown', ...MIN_OST_MENU() }
+        );
+        return;
+      }
+      // Не подходит — удаляем сообщение и продолжаем обычную обработку
+      await bot.telegram.deleteMessage(ctx.chat.id, saveMsg.message_id).catch(() => {});
+    } catch (err) {
+      await bot.telegram.deleteMessage(ctx.chat.id, saveMsg.message_id).catch(() => {});
+    }
+  }
 
   // ── Определяем контекст: Сроки или Остатки ──────────────────────────────
   // СКЛ матчим только как отдельное слово — иначе «товары склад.xlsx» ложно
