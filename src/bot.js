@@ -5,7 +5,7 @@ const path = require('path');
 const fs   = require('fs');
 const fetch = require('node-fetch');
 const { processFiles, generateExcel } = require('./processor');
-const { processOstatki } = require('./processor_ostatki');
+const pMin = require('./processor_min');
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
 if (!BOT_TOKEN) throw new Error('Не задан BOT_TOKEN');
@@ -65,6 +65,7 @@ const OSTATKI_FILES = [
 const MAIN_MENU = Markup.inlineKeyboard([
   [Markup.button.callback('📊 Сроки годности',   'menu:sroki')],
   [Markup.button.callback('📦 Остатки товара',   'menu:ostatki')],
+  [Markup.button.callback('📋 Минимальные остатки', 'menu:minOst')],
 ]);
 
 const SROKI_MENU = (session) => {
@@ -318,7 +319,16 @@ bot.on('document', async ctx => {
     const msg = await ctx.reply(`⏳ Получаю *${ft.label}*...`, { parse_mode: 'Markdown' });
 
     try {
-      session.ostatki[ft.key] = await downloadFile(doc.file_id);
+      const fileBuffer = await downloadFile(doc.file_id);
+      session.ostatki[ft.key] = fileBuffer;
+
+      // Сохраняем группы на диск при загрузке Склад
+      if (ft.key === 'sklad') {
+        try {
+          const groups = pMin.extractGroupsFromSklad(fileBuffer);
+          if (groups.length > 0) pMin.saveSkładGroups(groups);
+        } catch (e) { /* ignore */ }
+      }
       const loaded = Object.values(session.ostatki).filter(Boolean).length;
 
       await ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, null,
@@ -332,6 +342,25 @@ bot.on('document', async ctx => {
     } catch (err) {
       await ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, null,
         `❌ Не удалось загрузить файл: ${err.message}`
+      );
+    }
+    return;
+  }
+
+  // ── Минимальные остатки: ожидаем загрузку заполненного файла ───────────────
+  if (session.waitingForMinOst && name.toLowerCase().endsWith('.xlsx')) {
+    session.waitingForMinOst = false;
+    const saveMsg = await ctx.reply('⏳ Сохраняю файл минимальных остатков...');
+    try {
+      const buf = await downloadFile(doc.file_id);
+      pMin.saveMinFile(buf, doc.file_id);
+      await ctx.telegram.editMessageText(ctx.chat.id, saveMsg.message_id, null,
+        `✅ Файл *Минимальные остатки* сохранён!\nОн будет доступен до следующей замены.`,
+        { parse_mode: 'Markdown', ...MIN_OST_MENU() }
+      );
+    } catch (err) {
+      await ctx.telegram.editMessageText(ctx.chat.id, saveMsg.message_id, null,
+        `❌ Не удалось сохранить файл: ${err.message}`
       );
     }
     return;
@@ -395,6 +424,92 @@ ${err.message}`
 }
 
 // ── Запуск ─────────────────────────────────────────────────────────────────
+
+// ═══════════════════════════════════════════════════════════════════════════
+// МИНИМАЛЬНЫЕ ОСТАТКИ
+// ═══════════════════════════════════════════════════════════════════════════
+
+function MIN_OST_MENU() {
+  const hasSaved = pMin.hasMinFile();
+  const savedAt  = pMin.getMinFileSavedAt();
+  return Markup.inlineKeyboard([
+    [Markup.button.callback(
+      hasSaved ? `📥 Скачать последний файл (${savedAt})` : '📥 Скачать последний файл',
+      'minOst:download')],
+    [Markup.button.callback('🔄 Обновить минимальные остатки', 'minOst:update')],
+    [Markup.button.callback('⬅️ Главное меню', 'menu:main')],
+  ]);
+}
+
+bot.action('menu:minOst', async ctx => {
+  await ctx.answerCbQuery();
+  const hasSaved = pMin.hasMinFile();
+  const status   = hasSaved
+    ? `✅ Файл загружен ${pMin.getMinFileSavedAt()}`
+    : '⚠️ Файл ещё не загружен';
+  await ctx.editMessageText(
+    `📋 *Минимальные остатки*\n${status}`,
+    { parse_mode: 'Markdown', ...MIN_OST_MENU() }
+  );
+});
+
+// Скачать сохранённый файл
+bot.action('minOst:download', async ctx => {
+  await ctx.answerCbQuery();
+  if (!pMin.hasMinFile()) {
+    return ctx.answerCbQuery('⚠️ Файл ещё не загружен', { show_alert: true });
+  }
+  const filePath = pMin.getMinFilePath();
+  const fileId   = pMin.getMinFileId();
+  const savedAt  = pMin.getMinFileSavedAt();
+  if (filePath) {
+    await ctx.replyWithDocument(
+      { source: filePath, filename: `Минимальные_остатки_${savedAt}.xlsx` },
+      { caption: `📋 Минимальные остатки — сохранён ${savedAt}` }
+    );
+  } else if (fileId) {
+    await ctx.replyWithDocument(fileId,
+      { caption: `📋 Минимальные остатки — сохранён ${savedAt}` }
+    );
+  }
+});
+
+// Обновить: заполнить шаблон группами и отдать пользователю
+bot.action('minOst:update', async ctx => {
+  await ctx.answerCbQuery();
+  const session = getSession(ctx.chat.id);
+
+  // Группы берём из disk или из текущей сессии Склад
+  let groups = pMin.loadSkładGroups();
+
+  // Если в сессии загружен Склад — обновляем группы с него
+  if (session.ostatki && session.ostatki.sklad) {
+    try {
+      const fresh = pMin.extractGroupsFromSklad(session.ostatki.sklad);
+      if (fresh.length > 0) {
+        groups = fresh;
+        pMin.saveSkładGroups(groups);
+      }
+    } catch (e) { /* используем сохранённые */ }
+  }
+
+  if (groups.length === 0) {
+    return ctx.reply(
+      '⚠️ Нет данных о группах.\nСначала загрузите файл *Товары склад* в разделе «Остатки товара».',
+      { parse_mode: 'Markdown', ...Markup.inlineKeyboard([[Markup.button.callback('⬅️ Назад', 'menu:minOst')]]) }
+    );
+  }
+
+  // Заполняем шаблон
+  const buf = pMin.fillTemplate(groups);
+  session.waitingForMinOst = true;
+
+  await ctx.replyWithDocument(
+    { source: buf, filename: 'Минимальные_остатки_шаблон.xlsx' },
+    { caption: `📋 Шаблон заполнен: ${groups.length} групп в столбце A.\n\nЗаполните файл и загрузите его обратно в этот чат.` }
+  );
+});
+
 bot.launch({ dropPendingUpdates: true }).then(() => console.log('🤖 Бот запущен'));
 process.once('SIGINT',  () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
