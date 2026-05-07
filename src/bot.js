@@ -141,29 +141,24 @@ bot.action('menu:sroki', async ctx => {
   await ctx.answerCbQuery();
   const session = getSession(ctx.chat.id);
 
-  // ── Минимальные остатки: принимаем файл с любым именем, проверяем структуру ──
-  if (pMin.isWaitingForMin(ctx.chat.id)) {
-    const saveMsg = await ctx.reply('⏳ Проверяю файл...');
+  // ── Минимальные остатки: xlsm с листом «Одиночные группы» — без состояния ────
+  if (name.toLowerCase().endsWith('.xlsm')) {
+    const saveMsg = await ctx.reply('⏳ Проверяю структуру файла...');
     try {
       const buf = await downloadFile(doc.file_id);
-      if (!pMin.isMinOstkiFile(buf)) {
+      if (pMin.isMinOstkiFile(buf)) {
+        pMin.saveMinFile(buf, doc.file_id);
         await ctx.telegram.editMessageText(ctx.chat.id, saveMsg.message_id, null,
-          '⚠️ Файл не подходит — не найден лист «Одиночные группы».\n\nЗагрузите заполненный шаблон минимальных остатков.'
+          '✅ *Файл Минимальные остатки сохранён!*\nДоступен до следующей замены.',
+          { parse_mode: 'Markdown', ...MIN_OST_MENU() }
         );
         return;
       }
-      pMin.clearWaitingForMin(ctx.chat.id);
-      pMin.saveMinFile(buf, doc.file_id);
-      await ctx.telegram.editMessageText(ctx.chat.id, saveMsg.message_id, null,
-        '✅ Файл *Минимальные остатки* сохранён навсегда!\nДоступен до следующей замены.',
-        { parse_mode: 'Markdown', ...MIN_OST_MENU() }
-      );
+      // Не подходит — удаляем сообщение и продолжаем обычную обработку
+      await bot.telegram.deleteMessage(ctx.chat.id, saveMsg.message_id).catch(() => {});
     } catch (err) {
-      await ctx.telegram.editMessageText(ctx.chat.id, saveMsg.message_id, null,
-        `❌ Ошибка: ${err.message}`
-      );
+      await bot.telegram.deleteMessage(ctx.chat.id, saveMsg.message_id).catch(() => {});
     }
-    return;
   }
 
 
@@ -526,8 +521,6 @@ bot.action('minOst:update', async ctx => {
 
   // Заполняем шаблон
   const buf = await pMin.fillTemplate(groups);
-  pMin.setWaitingForMin(ctx.chat.id); // сохраняем на диск — переживает рестарт
-
   await ctx.replyWithDocument(
     { source: buf, filename: 'Минимальные_остатки_шаблон.xlsm' },
     { caption: `📋 Шаблон заполнен: ${groups.length} групп в столбце A.\n\nЗаполните файл и загрузите его обратно в этот чат.` }
